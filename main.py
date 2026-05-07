@@ -8,7 +8,7 @@ from google.oauth2.service_account import Credentials
 
 app = FastAPI()
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "8553079256:AAHW_NUJVBMTbyde2UQ7FwzXJiSGOUin-bI")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "TU_TELEGRAM_TOKEN")
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
 # Usamos los Scopes modernos de Google Auth
