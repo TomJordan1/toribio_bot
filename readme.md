@@ -1,8 +1,14 @@
 # Toribio Bot
 
-Toribio es un bot de Telegram diseñado para automatizar el registro de gastos. Recibe fotografías de recibos o facturas, extrae la información clave (proveedor y monto) mediante reconocimiento óptico de caracteres (OCR) y registra los datos automáticamente en una hoja de cálculo de Google Sheets.
+<p align="center">
+  <img src="/toribio_telegram.png" width="300" alt="Imagen de perfil del chatbot de Telegram">
+</p>
 
-## ✨ Características Principales
+
+
+Toribio es un bot de Telegram diseñado para automatizar el registro de gastos. Recibe fotografías de recibos o facturas, extrae la información clave mediante reconocimiento óptico de caracteres (OCR) y registra los datos automáticamente en una hoja de cálculo de Google Sheets.
+
+## ✨ Características
 * **Recepción de imágenes:** Interfaz directa a través de Telegram.
 * **Procesamiento OCR:** Integración con la API de OCR.space para extraer texto de las imágenes.
 * **Extracción inteligente:** Uso de expresiones regulares para identificar montos y proveedores.
