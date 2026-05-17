@@ -8,8 +8,17 @@ from google.oauth2.service_account import Credentials
 
 app = FastAPI()
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "8553079256:AAHW_NUJVBMTbyde2UQ7FwzXJiSGOUin-bI")
+# TOKENS a usar
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+OCR_API_KEY = os.getenv("OCR_API_KEY")
+
+if not TELEGRAM_TOKEN:
+    raise ValueError("🚨 ERROR: Falta TELEGRAM_TOKEN en el archivo .env")
+if not OCR_API_KEY:
+    raise ValueError("🚨 ERROR: Falta OCR_API_KEY en el archivo .env")
+
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
+
 
 # Usamos los Scopes modernos de Google Auth
 SCOPE = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
@@ -52,7 +61,7 @@ async def telegram_webhook(request: Request):
             # 2. Enviar a OCR.space
             ocr_url = "https://api.ocr.space/parse/image"
             ocr_payload = {
-                'apikey': 'K88010627588957',
+                'apikey': OCR_API_KEY,
                 'language': 'spa',
             }
             

@@ -1,5 +1,6 @@
 # Credenciales y secretos
 cred.json
+.env
 
 # Entornos virtuales
 venv/
