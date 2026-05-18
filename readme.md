@@ -55,7 +55,7 @@ cd toribio_bot
 python -m venv venv
 
 # Activar en Windows:
-venv\Scripts\activate
+venv\bin\activate
 # Activar en macOS/Linux:
 source venv/bin/activate
 
