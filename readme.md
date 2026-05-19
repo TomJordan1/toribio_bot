@@ -51,8 +51,9 @@ cd toribio_bot
 **2. Crea un entorno virtual e instala las dependencias:**
 
 ```bash
-# Crear entorno virtual
-python -m venv venv
+# Crear entorno virtual (linux - python, windows - py)
+python -3.11 -m venv venv
+
 
 # Activar en Windows:
 venv\bin\activate
@@ -61,6 +62,10 @@ source venv/bin/activate
 
 # Instalar librerías necesarias
 pip install fastapi uvicorn requests gspread google-auth
+
+# (Alternativa opcional)
+
+pip install > requirements.txt
 
 ```
 
