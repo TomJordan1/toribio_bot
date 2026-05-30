@@ -1,7 +1,7 @@
 # Toribio Bot
 
 <p align="center">
-  <img src="toribio_telegram.png" width="250" alt="Imagen de perfil del chatbot de Telegram">
+  <img src="docs/toribio_telegram.png" width="250" alt="Imagen de perfil del chatbot de Telegram">
 </p>
 
 <p align="center">
