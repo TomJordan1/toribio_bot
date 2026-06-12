@@ -4,13 +4,13 @@ import base64
 from openai import OpenAI
 import gspread
 from google.oauth2.service_account import Credentials
+from datetime import datetime, timezone, timedelta
 
 # --- CONFIGURACIÓN DE GROQ ---
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 if not GROQ_API_KEY:
     raise ValueError("🚨 ERROR: Falta GROQ_API_KEY en el archivo .env")
 
-# Cliente de OpenAI apuntando a Groq
 llm_client = OpenAI(
     api_key=GROQ_API_KEY,
     base_url="https://api.groq.com/openai/v1"
@@ -21,31 +21,59 @@ SCOPE = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis
 CREDS_FILE = "cred.json"
 SHEET_NAME = "Gastos"
 
+# Hora de Perú (UTC-5) para generación de códigos
+ZONA_HORARIA_PERU = timezone(timedelta(hours=-5))
+
 def get_sheets_client():
     creds = Credentials.from_service_account_file(CREDS_FILE, scopes=SCOPE)
     return gspread.authorize(creds)
 
-def extraer_datos_recibo_llm(image_bytes: bytes) -> dict:
-    """Envía la imagen a Groq y devuelve un JSON estructurado con los datos del recibo."""
+def obtener_saldo_actual():
+    """Lee la última fila de la hoja para obtener el saldo actual. Retorna None si está vacía."""
+    try:
+        sheets_client = get_sheets_client()
+        sheet = sheets_client.open(SHEET_NAME).sheet1
+        todas_las_filas = sheet.get_all_values()
+        
+        # Si solo están las cabeceras (1 fila) o la hoja está vacía
+        if len(todas_las_filas) <= 1:
+            return None
+            
+        # Extraer la columna M (índice 12) de la última fila
+        ultimo_saldo_str = todas_las_filas[-1][12].replace(",", "")
+        return float(ultimo_saldo_str)
+    except Exception as e:
+        print(f"Error al obtener el saldo: {e}")
+        return None
+
+def extraer_datos_recibo_llm(image_bytes: bytes, contexto_usuario: str) -> dict:
+    """Envía la imagen y el contexto a Groq para extraer el nuevo formato completo."""
     imagen_base64 = base64.b64encode(image_bytes).decode('utf-8')
     
-    # Prompt optimizado para extraer RUC y clasificar conceptualmente el gasto
-    prompt = """
-    Analiza este recibo/factura y extrae los siguientes datos en un objeto JSON estricto:
-    {
-        "proveedor": "Nombre principal de la tienda o establecimiento",
-        "ruc": "Número de RUC del proveedor (11 dígitos. Si no se detecta o no aplica, escribe 'No detectado')",
-        "monto": "Monto total final a pagar (solo el número con dos decimales, ignora subtotales)",
-        "fecha": "Fecha de la compra en formato DD/MM/YYYY",
-        "categoria_gasto": "Clasifica la compra en una palabra: Comida, Materiales, Movilidad, Merchandising, Otros"
-    }
-    Si no encuentras algún dato, escribe "No detectado".
-    No agregues texto adicional, solo devuelve el JSON.
+    prompt = f"""
+    Eres un auditor financiero. Analiza este comprobante (o captura de Yape/Plin) y cruza la información con el siguiente contexto proporcionado por el usuario:
+    CONTEXTO DEL USUARIO: "{contexto_usuario}"
+    
+    Extrae o deduce los siguientes datos en un JSON estricto:
+    {{
+        "fecha": "Fecha de la compra o transferencia en formato DD/MM/YYYY",
+        "nro_operacion": "Número de operación o código de transacción (solo los primeros 4 o 5 dígitos clave, o '01' si no aplica)",
+        "concepto": "Descripción general de la compra/transferencia basándote en la imagen y el contexto",
+        "tipo": "Clasifica como: Compra, DeudaXCobrar, Deuda Cobrada, u otro según el contexto",
+        "ing_eg": "Debe ser estrictamente 'Ingreso' o 'Egreso'",
+        "motivo": "Motivo específico (ej. Página Web, Integración, etc.) según el contexto",
+        "acreedor": "Quién es el acreedor según el contexto (o 'No Aplica')",
+        "deudor": "Quién es el deudor según el contexto (o 'No Aplica')",
+        "estado": "Estado del pago (ej. 'Pagado', 'Pendiente')",
+        "monto": "Monto total de la operación (solo el número con dos decimales)"
+    }}
+    Si algún dato no se puede inferir ni de la imagen ni del contexto, escribe 'Desconocido'.
+    Devuelve ÚNICAMENTE el objeto JSON.
     """
 
     try:
         response = llm_client.chat.completions.create(
-            model="meta-llama/llama-4-scout-17b-16e-instruct", # Modelo de producción oficial y activo en Groq
+            model="meta-llama/llama-4-scout-17b-16e-instruct",
             messages=[
                 {
                     "role": "user",
@@ -57,39 +85,73 @@ def extraer_datos_recibo_llm(image_bytes: bytes) -> dict:
             ],
             response_format={"type": "json_object"}
         )
-        
-        # Extraemos y convertimos la respuesta a un diccionario de Python
-        datos = json.loads(response.choices[0].message.content)
-        return datos
-
+        return json.loads(response.choices[0].message.content)
     except Exception as e:
         print(f"Error en LLM: {e}")
-        return {"proveedor": "Error", "ruc": "Error", "monto": "Error", "fecha": "Error", "categoria_gasto": "Error"}
+        return {"error": True}
 
-def guardar_en_sheets(datos: dict):
-    """Calcula el ID autoincremental y guarda la fila en Google Sheets en el orden especificado."""
+def generar_codigo_tesoreria(fecha_str: str, nro_operacion: str) -> str:
+    """Genera el código con el formato: LetraMes + DDMMYY + DigitosOperacion"""
+    meses_letras = ["E", "F", "M", "A", "M", "J", "J", "A", "S", "O", "N", "D"]
+    ahora = datetime.now(ZONA_HORARIA_PERU)
+    letra_mes = meses_letras[ahora.month - 1]
+    
+    # Formatear la fecha actual a DDMMYY (ej. 191025)
+    fecha_ddmmyy = ahora.strftime("%d%m%y")
+    
+    # Limpiar y asegurar que tengamos dígitos para la operación
+    op_limpio = ''.join(filter(str.isdigit, nro_operacion))
+    if not op_limpio:
+        op_limpio = "01" # Default si no hay números
+    else:
+        op_limpio = op_limpio[:2] # Tomar solo los primeros para mantenerlo corto como en el ejemplo
+        
+    return f"{letra_mes}{fecha_ddmmyy}{op_limpio}"
+
+def guardar_en_sheets(datos: dict, saldo_previo: float) -> str:
+    """Prepara y guarda la fila con las 13 columnas y calcula el saldo."""
     sheets_client = get_sheets_client()
     sheet = sheets_client.open(SHEET_NAME).sheet1
     
-    # 1. Calcular el ID Autoincremental dinámicamente basado en las filas existentes
-    todas_las_filas = sheet.get_all_values()
-    # Si solo están las cabeceras (1 fila), len() será 1, por lo que el próximo ID será 1.
-    id_autoincremental = len(todas_las_filas)
+    codigo = generar_codigo_tesoreria(datos["fecha"], datos["nro_operacion"])
     
-    datos["id"] = id_autoincremental
+    # Manejar monto y matemáticas
+    try:
+        monto_float = float(datos["monto"])
+    except ValueError:
+        monto_float = 0.0
+
+    ingreso_val = "-"
+    egreso_val = "-"
     
-    # ID | Fecha Registro | Comprador | RUC | Proveedor | Proyecto/Actividad | Categoría Gasto | Monto | Fecha Comprobante | Estado Reembolso
+    if datos["ing_eg"].lower() == "ingreso":
+        ingreso_val = f"{monto_float:.2f}"
+        nuevo_saldo = saldo_previo + monto_float
+    else:
+        egreso_val = f"{monto_float:.2f}"
+        nuevo_saldo = saldo_previo - monto_float
+
+    datos["codigo"] = codigo
+    datos["saldo"] = f"{nuevo_saldo:.2f}"
+    datos["ingreso_final"] = ingreso_val
+    datos["egreso_final"] = egreso_val
+
+    # Estructura estricta de 13 columnas
     fila = [
-        id_autoincremental,
-        datos["fecha_registro"],
-        datos["comprador"],
-        datos["ruc"],
-        datos["proveedor"],
-        datos["proyecto"],
-        datos["categoria_gasto"],
-        datos["monto"],
+        codigo,
         datos["fecha"],
-        datos["estado_reembolso"]
+        datos["nro_operacion"],
+        datos["concepto"],
+        datos["tipo"],
+        datos["ing_eg"],
+        datos["motivo"],
+        datos["acreedor"],
+        datos["deudor"],
+        datos["estado"],
+        ingreso_val,
+        egreso_val,
+        f"{nuevo_saldo:.2f}"
     ]
+    
     sheet.append_row(fila)
-    return id_autoincremental
+    return codigo

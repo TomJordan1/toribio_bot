@@ -1,306 +1,208 @@
 import os
-import re
 import requests
 import traceback
-from datetime import datetime, timezone, timedelta
 from fastapi import FastAPI, Request
 from dotenv import load_dotenv
 
-# Cargar variables de entorno
 load_dotenv()
 
-# Importar nuestros módulos
-from servicios import extraer_datos_recibo_llm, guardar_en_sheets
+from servicios import obtener_saldo_actual, extraer_datos_recibo_llm, guardar_en_sheets
 from generador_pdf import generar_comprobante_pdf
 
 app = FastAPI()
 
-# TOKENS
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-if not TELEGRAM_TOKEN:
-    raise ValueError("🚨 ERROR: Falta TELEGRAM_TOKEN en el archivo .env")
-
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
-# Hora de Perú (UTC-5)
-ZONA_HORARIA_PERU = timezone(timedelta(hours=-5))
-
-# Estados de la conversación por usuario
+# Diccionario complejo de estados para la máquina secuencial
 user_states = {}
 
-@app.get("/")
-def home():
-    return {"status": "Servidor funcionando correctamente"}
+def enviar_mensaje(chat_id, texto):
+    requests.post(f"{TELEGRAM_API_URL}/sendMessage", json={"chat_id": chat_id, "text": texto, "parse_mode": "Markdown"})
+
+def procesar_imagen_y_confirmar(chat_id):
+    """Descarga la imagen, llama a Groq con el contexto y muestra el resumen."""
+    state = user_states[chat_id]
+    enviar_mensaje(chat_id, "⚙️ Cruzando imagen con tu contexto usando IA. Dame un momento...")
+    
+    try:
+        # Obtener imagen
+        file_info = requests.get(f"{TELEGRAM_API_URL}/getFile?file_id={state['file_id']}").json()
+        file_path = file_info["result"]["file_path"]
+        image_bytes = requests.get(f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{file_path}").content
+
+        # Consolidar contexto manual si lo hay
+        contexto = state.get("contexto_texto", "")
+        if not contexto:
+            c_man = state.get("contexto_manual", {})
+            contexto = f"Tipo: {c_man.get('tipo', '')}, Motivo: {c_man.get('motivo', '')}, Acreedor: {c_man.get('acreedor', '')}, Deudor: {c_man.get('deudor', '')}"
+
+        # Llamar al Super-Prompt
+        datos_ia = extraer_datos_recibo_llm(image_bytes, contexto)
+
+        if "error" not in datos_ia:
+            state["step"] = "confirmar"
+            state["datos_procesados"] = datos_ia
+            
+            resumen = (
+                f"🧾 **Datos Procesados (Listo para guardar):**\n\n"
+                f"📅 **Fecha:** {datos_ia.get('fecha')}\n"
+                f"🏷️ **Concepto:** {datos_ia.get('concepto')}\n"
+                f"🔄 **Tipo:** {datos_ia.get('tipo')} ({datos_ia.get('ing_eg')})\n"
+                f"📌 **Motivo:** {datos_ia.get('motivo')}\n"
+                f"👤 **Acreedor:** {datos_ia.get('acreedor')}\n"
+                f"👤 **Deudor:** {datos_ia.get('deudor')}\n"
+                f"💰 **Monto:** S/ {datos_ia.get('monto')}\n"
+                f"⚖️ **Saldo Previo en Caja:** S/ {state['saldo_previo']}\n\n"
+                f"¿Guardar en la base de datos?\n"
+                f"1) Sí, registrar ahora\n"
+                f"2) Guardar y generar PDF de respaldo\n"
+                f"3) /cancelar"
+            )
+            enviar_mensaje(chat_id, resumen)
+        else:
+            enviar_mensaje(chat_id, "❌ Error al analizar la imagen con Groq.")
+            user_states.pop(chat_id, None)
+
+    except Exception as e:
+        traceback.print_exc()
+        enviar_mensaje(chat_id, "⚠️ Error interno durante el procesamiento.")
+        user_states.pop(chat_id, None)
+
 
 @app.post("/webhook")
 async def telegram_webhook(request: Request):
     data = await request.json()
-
     if "message" not in data:
         return {"status": "ok"}
 
     message = data["message"]
     chat_id = str(message["chat"]["id"])
 
-    # --- SI EL USUARIO ENVÍA UNA FOTO ---
+    # --- 1. RECEPCIÓN DE IMAGEN ---
     if "photo" in message:
-        user_states.pop(chat_id, None)
-
-        requests.post(
-            f"{TELEGRAM_API_URL}/sendMessage",
-            json={"chat_id": chat_id, "text": "📸 Imagen recibida. Dame un momento para revisarla bien..."}
-        )
-
-        try:
-            # 1. Obtener imagen de Telegram
-            file_id = message["photo"][-1]["file_id"]
-            file_info = requests.get(f"{TELEGRAM_API_URL}/getFile?file_id={file_id}").json()
-            file_path = file_info["result"]["file_path"]
-
-            image_url = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{file_path}"
-            image_bytes = requests.get(image_url).content
-
-            # 2. Extraer Comprador y Proyecto desde Telegram
-            comprador = message.get("from", {}).get("first_name", "Desconocido")
-            proyecto = message.get("caption", "General") # La leyenda de la foto representará el Proyecto/Actividad
-
-            # 3. Mandar a Groq (LLM)
-            datos_ia = extraer_datos_recibo_llm(image_bytes)
-
-            if datos_ia["monto"] != "Error":
-                # 4. Consolidar datos en el estado temporal
-                user_states[chat_id] = {
-                    "step": "confirmar",
-                    "datos": {
-                        "fecha_registro": datetime.now(ZONA_HORARIA_PERU).strftime("%d/%m/%Y %H:%M:%S"),
-                        "comprador": comprador,
-                        "ruc": datos_ia.get("ruc", "No detectado"),
-                        "proveedor": datos_ia.get("proveedor", "No detectado"),
-                        "proyecto": proyecto,
-                        "categoria_gasto": datos_ia.get("categoria_gasto", "Otros"),
-                        "monto": datos_ia.get("monto", "No detectado"),
-                        "fecha": datos_ia.get("fecha", "No detectado"),
-                        "estado_reembolso": "Pendiente"
-                    }
-                }
-
-                d = user_states[chat_id]["datos"]
-                respuesta = (
-                    f"🧾 **Comprobante Analizado:**\n\n"
-                    f"👤 **Comprador:** {d['comprador']}\n"
-                    f"🆔 **RUC:** {d['ruc']}\n"
-                    f"🏢 **Proveedor:** {d['proveedor']}\n"
-                    f"📂 **Proyecto/Actividad:** {d['proyecto']}\n"
-                    f"🏷️ **Categoría Gasto:** {d['categoria_gasto']}\n"
-                    f"💰 **Monto:** S/ {d['monto']}\n"
-                    f"📅 **Fecha Emisión:** {d['fecha']}\n\n"
-                    f"¿Los datos son correctos?\n"
-                    f"1) Solo guardar en Sheets\n"
-                    f"2) Guardar en Sheets y generar PDF\n"
-                    f"3) Editar datos"
-                )
-            else:
-                respuesta = "❌ Ocurrió un error al analizar la imagen con el modelo de visión."
-
-        except Exception as e:
-            traceback.print_exc()
-            respuesta = "⚠️ Ocurrió un error interno al procesar la imagen."
-
-        requests.post(
-            f"{TELEGRAM_API_URL}/sendMessage",
-            json={"chat_id": chat_id, "text": respuesta, "parse_mode": "Markdown"}
-        )
-        return {"status": "ok"}
-
-    # --- MANEJO DE MENSAJES DE TEXTO ---
-    state = user_states.get(chat_id)
-
-    if not state:
-        requests.post(
-            f"{TELEGRAM_API_URL}/sendMessage",
-            json={
-                "chat_id": chat_id, 
-                "text": "👋 ¡Hola! Envíame la foto de un recibo o factura.\n\n*💡 Consejo:* Escribe el nombre del proyecto en la leyenda (caption) de la foto para asignarlo automáticamente.",
-                "parse_mode": "Markdown"
-            }
-        )
-        return {"status": "ok"}
-
-    # Estado: Confirmar
-    if state["step"] == "confirmar":
-        text = message.get("text", "").strip().lower()
-
-        # Opción 1: Solo guardar en Sheets
-        if text in ["1", "solo guardar", "guardar", "sí", "si"]:
-            try:
-                id_asignado = guardar_en_sheets(state["datos"])
-                d = state["datos"]
-                respuesta = (
-                    f"✅ ¡Gasto registrado en Sheets con el ID #{id_asignado}!\n"
-                    f"*(No se generó PDF por elección del usuario)*\n\n"
-                    f"📥 Envía otra foto para continuar."
-                )
-            except Exception as e:
-                traceback.print_exc()
-                respuesta = "⚠️ Error de conexión con Google Sheets."
-            finally:
-                user_states.pop(chat_id, None)
-
-            requests.post(
-                f"{TELEGRAM_API_URL}/sendMessage", 
-                json={"chat_id": chat_id, "text": respuesta, "parse_mode": "Markdown"}
-            )
+        user_states[chat_id] = {
+            "file_id": message["photo"][-1]["file_id"],
+            "caption": message.get("caption", ""),
+            "contexto_manual": {}
+        }
+        
+        # Validar Saldo Inicial Bloqueante
+        saldo_actual = obtener_saldo_actual()
+        if saldo_actual is None:
+            user_states[chat_id]["step"] = "pedir_saldo_base"
+            enviar_mensaje(chat_id, "⚠️ **Base de datos vacía.**\nEste es el primer registro. Por favor, escribe el **Saldo Base / Inicial** en caja (ej. 1500.50) para poder iniciar las operaciones.")
             return {"status": "ok"}
+        
+        user_states[chat_id]["saldo_previo"] = saldo_actual
 
-        # Opción 2: Guardar en Sheets y generar PDF
-        elif text in ["2", "pdf", "guardar y pdf"]:
+        # Bifurcación automática por leyenda
+        if user_states[chat_id]["caption"]:
+            user_states[chat_id]["contexto_texto"] = user_states[chat_id]["caption"]
+            procesar_imagen_y_confirmar(chat_id)
+        else:
+            user_states[chat_id]["step"] = "elegir_metodo"
+            enviar_mensaje(chat_id, "Tengo la foto. ¿Cómo completamos los datos faltantes?\n\n✍️ Escribe **'manual'** para que te pregunte uno por uno.\n🗣️ O escribe **todo de golpe aquí** (ej. 'Compra para integración, acreedor Proyecta, deudor el museo').")
+        
+        return {"status": "ok"}
+
+    # --- 2. MANEJO DE TEXTO (MÁQUINA DE ESTADOS) ---
+    state = user_states.get(chat_id)
+    if not state:
+        enviar_mensaje(chat_id, "👋 ¡Hola, Tesorería! Envíame la foto del comprobante o captura para empezar.\n💡 *Tip: Si pones toda la explicación en la leyenda de la foto, salto las preguntas y lo proceso al instante.*")
+        return {"status": "ok"}
+
+    text = message.get("text", "").strip()
+
+    if text.lower() == "/cancelar":
+        user_states.pop(chat_id, None)
+        enviar_mensaje(chat_id, "❌ Operación cancelada. Envíame otra foto cuando desees.")
+        return {"status": "ok"}
+
+    # Bloque: Configuración inicial del saldo
+    if state.get("step") == "pedir_saldo_base":
+        try:
+            saldo_ingresado = float(text.replace(",", ""))
+            state["saldo_previo"] = saldo_ingresado
+            
+            if state["caption"]:
+                state["contexto_texto"] = state["caption"]
+                procesar_imagen_y_confirmar(chat_id)
+            else:
+                state["step"] = "elegir_metodo"
+                enviar_mensaje(chat_id, f"✅ Saldo inicial configurado en S/{saldo_ingresado}.\n\n¿Cómo completamos los datos de esta foto?\n✍️ Escribe **'manual'** o **descríbelo todo aquí**.")
+        except ValueError:
+            enviar_mensaje(chat_id, "Formato incorrecto. Por favor envía solo números (ej. 1500.00).")
+        return {"status": "ok"}
+
+    # Bloque: Bifurcación
+    if state.get("step") == "elegir_metodo":
+        if text.lower() == "manual":
+            state["step"] = "pedir_tipo"
+            enviar_mensaje(chat_id, "🔹 **Modo Manual: Paso 1/4**\n¿Qué tipo de operación es? (ej. Compra, DeudaXCobrar, Deuda Cobrada)")
+        else:
+            state["contexto_texto"] = text
+            procesar_imagen_y_confirmar(chat_id)
+        return {"status": "ok"}
+
+    # Bloque: Secuencia Manual
+    if state.get("step") == "pedir_tipo":
+        state["contexto_manual"]["tipo"] = text
+        state["step"] = "pedir_motivo"
+        enviar_mensaje(chat_id, "🔹 **Paso 2/4**\n¿Cuál es el Motivo? (ej. Página Web, Integración)")
+        return {"status": "ok"}
+
+    if state.get("step") == "pedir_motivo":
+        state["contexto_manual"]["motivo"] = text
+        state["step"] = "pedir_acreedor"
+        enviar_mensaje(chat_id, "🔹 **Paso 3/4**\n¿Quién es el Acreedor? (Escribe el nombre o 'No Aplica')")
+        return {"status": "ok"}
+
+    if state.get("step") == "pedir_acreedor":
+        state["contexto_manual"]["acreedor"] = text
+        state["step"] = "pedir_deudor"
+        enviar_mensaje(chat_id, "🔹 **Paso 4/4**\n¿Quién es el Deudor? (Escribe el nombre o 'No Aplica')")
+        return {"status": "ok"}
+
+    if state.get("step") == "pedir_deudor":
+        state["contexto_manual"]["deudor"] = text
+        procesar_imagen_y_confirmar(chat_id)
+        return {"status": "ok"}
+
+    # Bloque: Guardado Final
+    if state.get("step") == "confirmar":
+        if text in ["1", "2"]:
             try:
-                id_asignado = guardar_en_sheets(state["datos"])
-                d = state["datos"]
+                codigo_asignado = guardar_en_sheets(state["datos_procesados"], state["saldo_previo"])
                 
-                requests.post(
-                    f"{TELEGRAM_API_URL}/sendMessage",
-                    json={"chat_id": chat_id, "text": f"✅ Gasto registrado (ID #{id_asignado}). Generando PDF..."}
-                )
-
-                # Compilación del PDF usando el módulo independiente generador_pdf.py
-                nombre_pdf_local = f"comprobante_{id_asignado}.pdf"
-                try:
-                    generar_comprobante_pdf(d, nombre_pdf_local)
+                if text == "1":
+                    enviar_mensaje(chat_id, f"✅ ¡Operación registrada exitosamente bajo el código **{codigo_asignado}**!\n📥 Envía otra foto para continuar.")
+                
+                elif text == "2":
+                    enviar_mensaje(chat_id, f"✅ Operación **{codigo_asignado}** registrada. Generando PDF...")
                     
-                    with open(nombre_pdf_local, 'rb') as archivo_adjunto:
+                    nombre_pdf = f"comprobante_{codigo_asignado}.pdf"
+                    datos_pdf = state["datos_procesados"]
+                    # Asegurar que código esté inyectado para el PDF
+                    datos_pdf["codigo"] = codigo_asignado 
+                    
+                    generar_comprobante_pdf(datos_pdf, nombre_pdf)
+                    
+                    with open(nombre_pdf, 'rb') as archivo:
                         requests.post(
                             f"{TELEGRAM_API_URL}/sendDocument",
-                            data={"chat_id": chat_id, "caption": f"📄 Comprobante de Gasto Interno - ID #{id_asignado}\n📥 Envía otra foto para continuar."},
-                            files={"document": archivo_adjunto}
+                            data={"chat_id": chat_id, "caption": f"📄 Respaldo de Tesorería - {codigo_asignado}"},
+                            files={"document": archivo}
                         )
-                except Exception as pdf_error:
-                    print(f"Error generando o enviando PDF: {pdf_error}")
-                    requests.post(
-                        f"{TELEGRAM_API_URL}/sendMessage",
-                        json={"chat_id": chat_id, "text": "⚠️ El gasto se guardó, pero ocurrió un problema al compilar el PDF."}
-                    )
-                finally:
-                    if os.path.exists(nombre_pdf_local):
-                        os.remove(nombre_pdf_local)
+                    if os.path.exists(nombre_pdf):
+                        os.remove(nombre_pdf)
 
             except Exception as e:
                 traceback.print_exc()
-                requests.post(
-                    f"{TELEGRAM_API_URL}/sendMessage", 
-                    json={"chat_id": chat_id, "text": "⚠️ Error de conexión con Google Sheets."}
-                )
+                enviar_mensaje(chat_id, "⚠️ Error al guardar en Sheets.")
             finally:
                 user_states.pop(chat_id, None)
-
-            return {"status": "ok"}
-
-        # Opción 3: Entrar al modo edición
-        elif text in ["3", "editar"]:
-            state["step"] = "editar"
-            respuesta = (
-                "✏️ **Modo edición:**\n"
-                "Modifica los valores manteniendo las 5 barras verticales (`?`):\n\n"
-                "`Proveedor ? RUC ? Monto ? Fecha ? Categoría Gasto ? Proyecto`\n\n"
-                "Ejemplo:\n"
-                "`Librería UNI ? 20123456789 ? 35.50 ? 24/05/2026 ? Materiales ? Talleres Cono Norte`\n\n"
-                "O envía /cancelar para anular."
-            )
-            requests.post(
-                f"{TELEGRAM_API_URL}/sendMessage",
-                json={"chat_id": chat_id, "text": respuesta, "parse_mode": "Markdown"}
-            )
-            return {"status": "ok"}
-
         else:
-            requests.post(
-                f"{TELEGRAM_API_URL}/sendMessage",
-                json={"chat_id": chat_id, "text": "Por favor responde:\n1) Solo guardar\n2) Guardar y crear PDF\n3) Editar"}
-            )
-            return {"status": "ok"}
-
-
-    # --- ESTADO: EDITAR ---
-    if state["step"] == "editar":
-        text = message.get("text", "").strip()
-        if text.lower() == "/cancelar":
-            user_states.pop(chat_id, None)
-            requests.post(
-                f"{TELEGRAM_API_URL}/sendMessage",
-                json={"chat_id": chat_id, "text": "❌ Registro cancelado. Puedes enviar otra foto."}
-            )
-            return {"status": "ok"}
-
-        partes = [p.strip() for p in text.split("?")]
-        if len(partes) != 6 or not all(partes):
-            requests.post(
-                f"{TELEGRAM_API_URL}/sendMessage",
-                json={"chat_id": chat_id, "text": "⚠️ Estructura incorrecta. Asegúrate de proveer los 6 campos separados por '?'."}
-            )
-            return {"status": "ok"}
-
-        proveedor, ruc, monto_str, fecha_str, categoria_gasto, proyecto = partes
-
-        if not re.match(r'^\d+(\.\d{2})?$', monto_str):
-            requests.post(
-                f"{TELEGRAM_API_URL}/sendMessage",
-                json={"chat_id": chat_id, "text": "Formato de monto inválido (ejemplo correcto: 120.00). Intenta de nuevo."}
-            )
-            return {"status": "ok"}
-
-        # Aplicar correcciones manuales hechas por el usuario al estado temporal
-        d = state["datos"]
-        d["proveedor"] = proveedor
-        d["ruc"] = ruc
-        d["monto"] = monto_str
-        d["fecha"] = fecha_str
-        d["categoria_gasto"] = categoria_gasto
-        d["proyecto"] = proyecto
-
-        # Devolver al estado confirmar para que el usuario elija si quiere PDF o no con los nuevos cambios
-        state["step"] = "confirmar"
-
-        respuesta = (
-            f"📝 **Datos corregidos exitosamente.**\n"
-            f"¿Qué deseas hacer ahora con este registro?\n\n"
-            f"👤 **Comprador:** {d['comprador']}\n"
-            f"🆔 **RUC:** {d['ruc']}\n"
-            f"🏢 **Proveedor:** {d['proveedor']}\n"
-            f"📂 **Proyecto:** {d['proyecto']}\n"
-            f"🏷️ **Categoría:** {d['categoria_gasto']}\n"
-            f"💰 **Monto:** S/ {d['monto']}\n"
-            f"📅 **Fecha:** {d['fecha']}\n\n"
-            f"1) Solo guardar en Sheets\n"
-            f"2) Guardar en Sheets y generar PDF\n"
-            f"3) Volver a editar"
-        )
-
-        requests.post(
-            f"{TELEGRAM_API_URL}/sendMessage",
-            json={"chat_id": chat_id, "text": respuesta, "parse_mode": "Markdown"}
-        )
+            enviar_mensaje(chat_id, "Responde 1 para guardar, 2 para guardar+PDF, o /cancelar.")
+        
         return {"status": "ok"}
-
-@app.on_event("shutdown")
-def aviso_de_hibernacion():
-    # Si nadie estaba a mitad de un trámite, Toribio se duerme en silencio sin molestar a nadie.
-    if not user_states:
-        return 
-
-    mensaje_toribio = (
-        "¡Muuu! 🐮💤\n\n"
-        "El prado se quedó muy calladito y me dio sueñito, así que me voy a tomar una siesta. \n\n"
-        "Como mi memoria es cortita, acabo de olvidar el recibo que estábamos revisando. 🌿 "
-        "Cuando me necesites, vuelve a enviarme la foto, pero dame unos 50 segunditos para "
-        "desperezarme bien antes de responderte. ¡Nos vemos lueguito!"
-    )
-    
-    # Toribio le avisa automáticamente a los usuarios que dejó "en espera"
-    for chat_id in list(user_states.keys()):
-        try:
-            requests.post(
-                f"{TELEGRAM_API_URL}/sendMessage",
-                json={"chat_id": chat_id, "text": mensaje_toribio}
-            )
-        except Exception as e:
-            print(f"Error al avisar de la siesta al chat {chat_id}: {e}")

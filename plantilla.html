@@ -1,57 +1,65 @@
 <h1 align="center">
-    <font color="#1a365d">COMPROBANTE DE GASTO INTERNO</font>
+    <font color="#1a365d">COMPROBANTE DE OPERACIÓN - TESORERÍA</font>
 </h1>
 <br>
 <p>
-    <b>ID del Reporte:</b> #{{id}}<br>
-    <b>Fecha de Registro:</b> {{fecha_registro}}
+    <b>Código de Registro:</b> {{codigo}}<br>
+    <b>Fecha de Operación:</b> {{fecha}}
 </p>
 <br>
 <table width="100%" border="1">
     <thead>
         <tr bgcolor="#2b6cb0">
-            <th width="35%" align="left"><font color="#ffffff"> Concepto / Campo</font></th>
-            <th width="65%" align="left"><font color="#ffffff"> Detalle del Comprobante</font></th>
+            <th width="35%" align="left"><font color="#ffffff"> Concepto Contable</font></th>
+            <th width="65%" align="left"><font color="#ffffff"> Detalle Extraído / Asignado</font></th>
         </tr>
     </thead>
     <tbody>
         <tr>
-            <td><b> Responsable / Comprador</b></td>
-            <td> {{comprador}}</td>
+            <td><b> Concepto / Descripción</b></td>
+            <td> {{concepto}}</td>
         </tr>
         <tr bgcolor="#f7fafc">
-            <td><b> Proyecto o Actividad</b></td>
-            <td> {{proyecto}}</td>
+            <td><b> Tipo de Operación</b></td>
+            <td> {{tipo}} ({{ing_eg}})</td>
         </tr>
         <tr>
-            <td><b> Categoría de Gasto</b></td>
-            <td> {{categoria_gasto}}</td>
+            <td><b> Motivo del Proyecto</b></td>
+            <td> {{motivo}}</td>
         </tr>
         <tr bgcolor="#f7fafc">
-            <td><b> RUC del Proveedor</b></td>
-            <td> {{ruc}}</td>
+            <td><b> Nro Operación (Voucher)</b></td>
+            <td> {{nro_operacion}}</td>
         </tr>
         <tr>
-            <td><b> Nombre del Proveedor</b></td>
-            <td> {{proveedor}}</td>
+            <td><b> Entidad Acreedora</b></td>
+            <td> {{acreedor}}</td>
         </tr>
         <tr bgcolor="#f7fafc">
-            <td><b> Fecha de Emisión</b></td>
-            <td> {{fecha}}</td>
+            <td><b> Entidad Deudora</b></td>
+            <td> {{deudor}}</td>
         </tr>
         <tr>
-            <td><b> Monto Total Final</b></td>
-            <td><b> S/ {{monto}}</b></td>
+            <td><b> Estado de la Operación</b></td>
+            <td> <i>{{estado}}</i></td>
         </tr>
-        <tr bgcolor="#f7fafc">
-            <td><b> Estado de Reembolso</b></td>
-            <td> <i>{{estado_reembolso}}</i></td>
+        <tr bgcolor="#e2e8f0">
+            <td><b> Ingreso Generado</b></td>
+            <td> S/ {{ingreso_final}}</td>
+        </tr>
+        <tr bgcolor="#e2e8f0">
+            <td><b> Egreso Ejecutado</b></td>
+            <td> S/ {{egreso_final}}</td>
+        </tr>
+        <tr bgcolor="#2b6cb0">
+            <td><b><font color="#ffffff"> SALDO RESULTANTE EN CAJA</font></b></td>
+            <td><b><font color="#ffffff"> S/ {{saldo}}</font></b></td>
         </tr>
     </tbody>
 </table>
 <br>
 <p align="center">
     <font color="#718096" size="10">
-        <i>Este documento es una validación automatizada para auditorías del grupo estudiantil.</i>
+        <i>Documento autogenerado tras validación visual cruzada y matemática.</i>
     </font>
 </p>
