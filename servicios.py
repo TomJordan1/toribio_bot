@@ -21,7 +21,7 @@ SCOPE = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis
 CREDS_FILE = "cred.json"
 SHEET_NAME = "Gastos"
 
-# Hora de Perú (UTC-5) para generación de códigos
+# Hora de Perú (UTC-5)
 ZONA_HORARIA_PERU = timezone(timedelta(hours=-5))
 
 def get_sheets_client():
@@ -35,39 +35,37 @@ def obtener_saldo_actual():
         sheet = sheets_client.open(SHEET_NAME).sheet1
         todas_las_filas = sheet.get_all_values()
         
-        # Si solo están las cabeceras (1 fila) o la hoja está vacía
         if len(todas_las_filas) <= 1:
             return None
             
-        # Extraer la columna M (índice 12) de la última fila
-        ultimo_saldo_str = todas_las_filas[-1][12].replace(",", "")
+        # El Saldo es ahora la columna 12 (índice 11)
+        ultimo_saldo_str = todas_las_filas[-1][11].replace(",", "")
         return float(ultimo_saldo_str)
     except Exception as e:
         print(f"Error al obtener el saldo: {e}")
         return None
 
 def extraer_datos_recibo_llm(image_bytes: bytes, contexto_usuario: str) -> dict:
-    """Envía la imagen y el contexto a Groq para extraer el nuevo formato completo."""
     imagen_base64 = base64.b64encode(image_bytes).decode('utf-8')
     
     prompt = f"""
-    Eres un auditor financiero. Analiza este comprobante (o captura de Yape/Plin) y cruza la información con el siguiente contexto proporcionado por el usuario:
+    Eres un auditor financiero. Analiza este comprobante (o captura) y cruza la información con este contexto del usuario:
     CONTEXTO DEL USUARIO: "{contexto_usuario}"
     
-    Extrae o deduce los siguientes datos en un JSON estricto:
+    Extrae los siguientes datos en un JSON estricto:
     {{
-        "fecha": "Fecha de la compra o transferencia en formato DD/MM/YYYY",
-        "nro_operacion": "Número de operación o código de transacción (solo los primeros 4 o 5 dígitos clave, o '01' si no aplica)",
-        "concepto": "Descripción general de la compra/transferencia basándote en la imagen y el contexto",
-        "tipo": "Clasifica como: Compra, DeudaXCobrar, Deuda Cobrada, u otro según el contexto",
+        "fecha": "Fecha de la operación en formato DD/MM/YYYY",
+        "concepto": "Descripción de la compra/transferencia",
+        "tipo": "Clasifica como: Compra, DeudaXCobrar, Deuda Cobrada, etc.",
         "ing_eg": "Debe ser estrictamente 'Ingreso' o 'Egreso'",
-        "motivo": "Motivo específico (ej. Página Web, Integración, etc.) según el contexto",
-        "acreedor": "Quién es el acreedor según el contexto (o 'No Aplica')",
-        "deudor": "Quién es el deudor según el contexto (o 'No Aplica')",
+        "motivo": "Motivo específico (ej. Página Web, Integración)",
+        "acreedor": "Quién es el acreedor (o 'No Aplica')",
+        "deudor": "Quién es el deudor (o 'No Aplica')",
         "estado": "Estado del pago (ej. 'Pagado', 'Pendiente')",
-        "monto": "Monto total de la operación (solo el número con dos decimales)"
+        "monto": "Monto total (solo el número con dos decimales)",
+        "ruc": "Número de RUC (11 dígitos, o 'No Aplica')",
+        "proveedor": "Nombre del proveedor o persona (o 'No Aplica')"
     }}
-    Si algún dato no se puede inferir ni de la imagen ni del contexto, escribe 'Desconocido'.
     Devuelve ÚNICAMENTE el objeto JSON.
     """
 
@@ -90,32 +88,37 @@ def extraer_datos_recibo_llm(image_bytes: bytes, contexto_usuario: str) -> dict:
         print(f"Error en LLM: {e}")
         return {"error": True}
 
-def generar_codigo_tesoreria(fecha_str: str, nro_operacion: str) -> str:
-    """Genera el código con el formato: LetraMes + DDMMYY + DigitosOperacion"""
+def calcular_codigo_y_nro(fecha_str: str, todas_las_filas: list) -> tuple:
+    """Calcula el autoincremental del día y arma el Código."""
     meses_letras = ["E", "F", "M", "A", "M", "J", "J", "A", "S", "O", "N", "D"]
-    ahora = datetime.now(ZONA_HORARIA_PERU)
-    letra_mes = meses_letras[ahora.month - 1]
-    
-    # Formatear la fecha actual a DDMMYY (ej. 191025)
-    fecha_ddmmyy = ahora.strftime("%d%m%y")
-    
-    # Limpiar y asegurar que tengamos dígitos para la operación
-    op_limpio = ''.join(filter(str.isdigit, nro_operacion))
-    if not op_limpio:
-        op_limpio = "01" # Default si no hay números
-    else:
-        op_limpio = op_limpio[:2] # Tomar solo los primeros para mantenerlo corto como en el ejemplo
-        
-    return f"{letra_mes}{fecha_ddmmyy}{op_limpio}"
+    try:
+        dia, mes, anio = fecha_str.split("/")
+        letra_mes = meses_letras[int(mes) - 1]
+        fecha_ddmmyy = f"{dia}{mes}{anio[-2:]}"
+    except:
+        ahora = datetime.now(ZONA_HORARIA_PERU)
+        letra_mes = meses_letras[ahora.month - 1]
+        fecha_ddmmyy = ahora.strftime("%d%m%y")
+        fecha_str = ahora.strftime("%d/%m/%Y")
 
-def guardar_en_sheets(datos: dict, saldo_previo: float) -> str:
-    """Prepara y guarda la fila con las 13 columnas y calcula el saldo."""
+    # Contar cuántas filas existen con la MISMA fecha (La fecha está en el índice 1)
+    nro_operacion_dia = 1
+    for fila in todas_las_filas[1:]:
+        if len(fila) > 1 and fila[1] == fecha_str:
+            nro_operacion_dia += 1
+            
+    nro_str = f"{nro_operacion_dia:02d}" # Padding (ej. 01)
+    codigo = f"{letra_mes}{fecha_ddmmyy}{nro_str}"
+    
+    return codigo, nro_operacion_dia
+
+def guardar_en_sheets(datos: dict, saldo_previo: float) -> dict:
     sheets_client = get_sheets_client()
     sheet = sheets_client.open(SHEET_NAME).sheet1
     
-    codigo = generar_codigo_tesoreria(datos["fecha"], datos["nro_operacion"])
+    todas_las_filas = sheet.get_all_values()
+    codigo, nro_operacion_dia = calcular_codigo_y_nro(datos["fecha"], todas_las_filas)
     
-    # Manejar monto y matemáticas
     try:
         monto_float = float(datos["monto"])
     except ValueError:
@@ -131,27 +134,34 @@ def guardar_en_sheets(datos: dict, saldo_previo: float) -> str:
         egreso_val = f"{monto_float:.2f}"
         nuevo_saldo = saldo_previo - monto_float
 
+    fecha_registro = datetime.now(ZONA_HORARIA_PERU).strftime("%d/%m/%Y %H:%M:%S")
+
+    # Guardar en diccionario para pasar al PDF
     datos["codigo"] = codigo
-    datos["saldo"] = f"{nuevo_saldo:.2f}"
+    datos["nro_operacion_dia"] = str(nro_operacion_dia)
     datos["ingreso_final"] = ingreso_val
     datos["egreso_final"] = egreso_val
+    datos["saldo"] = f"{nuevo_saldo:.2f}"
+    datos["fecha_registro"] = fecha_registro
 
-    # Estructura estricta de 13 columnas
+    # Estructura estricta de 15 columnas
     fila = [
-        codigo,
-        datos["fecha"],
-        datos["nro_operacion"],
-        datos["concepto"],
-        datos["tipo"],
-        datos["ing_eg"],
-        datos["motivo"],
-        datos["acreedor"],
-        datos["deudor"],
-        datos["estado"],
-        ingreso_val,
-        egreso_val,
-        f"{nuevo_saldo:.2f}"
+        codigo,                             # 1
+        datos["fecha"],                     # 2
+        nro_operacion_dia,                  # 3
+        datos["concepto"],                  # 4
+        datos["tipo"],                      # 5
+        datos["motivo"],                    # 6
+        datos["acreedor"],                  # 7
+        datos["deudor"],                    # 8
+        datos["estado"],                    # 9
+        ingreso_val,                        # 10
+        egreso_val,                         # 11
+        f"{nuevo_saldo:.2f}",               # 12
+        datos.get("ruc", "No Aplica"),      # 13
+        datos.get("proveedor", "No Aplica"),# 14
+        fecha_registro                      # 15
     ]
     
     sheet.append_row(fila)
-    return codigo
+    return datos
