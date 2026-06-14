@@ -162,6 +162,8 @@ async def telegram_webhook(request: Request):
     # Bloque: Restauración del Modo de Edición
     if state.get("step") == "confirmar":
         if text in ["1", "2"]:
+            nombre_pdf = None
+            nombre_img_temporal = None
             try:
                 datos_finales = guardar_en_sheets(state["datos_procesados"], state["saldo_previo"])
                 codigo_asignado = datos_finales["codigo"]
@@ -171,8 +173,18 @@ async def telegram_webhook(request: Request):
                 elif text == "2":
                     enviar_mensaje(chat_id, f"¡Muuu! Operación **{codigo_asignado}** bien guardadita. Estoy armando tu PDF con mis cuernos...")
                     nombre_pdf = f"comprobante_{codigo_asignado}.pdf"
+                    nombre_img_temporal = f"img_temp_{codigo_asignado}.jpg"
                     
-                    generar_comprobante_pdf(datos_finales, nombre_pdf)
+                    # --- LÓGICA AGREGADA: DESCARGAR IMAGEN ANTES DEL PDF ---
+                    file_info = requests.get(f"{TELEGRAM_API_URL}/getFile?file_id={state['file_id']}").json()
+                    file_path = file_info["result"]["file_path"]
+                    image_bytes = requests.get(f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{file_path}").content
+                    
+                    with open(nombre_img_temporal, "wb") as f_img:
+                        f_img.write(image_bytes)
+                    # -------------------------------------------------------
+
+                    generar_comprobante_pdf(datos_finales, nombre_pdf, nombre_img_temporal)
                     
                     with open(nombre_pdf, 'rb') as archivo:
                         requests.post(
@@ -180,12 +192,17 @@ async def telegram_webhook(request: Request):
                             data={"chat_id": chat_id, "caption": f"📄 Respaldo de tu tesorería - Código: {codigo_asignado}"},
                             files={"document": archivo}
                         )
-                    if os.path.exists(nombre_pdf): os.remove(nombre_pdf)
 
             except Exception as e:
                 traceback.print_exc()
                 enviar_mensaje(chat_id, "¡Ay, qué torito tan despistado soy! Ocurrió un problema tratando de anotar esto en el Excel.")
             finally:
+                # --- LÓGICA AGREGADA: LIMPIEZA DE ARCHIVOS CREADOS ---
+                if nombre_pdf and os.path.exists(nombre_pdf):
+                    os.remove(nombre_pdf)
+                if nombre_img_temporal and os.path.exists(nombre_img_temporal):
+                    os.remove(nombre_img_temporal)
+                # -----------------------------------------------------
                 user_states.pop(chat_id, None)
                 
         elif text in ["3", "editar"]:
