@@ -182,9 +182,9 @@ async def telegram_webhook(request: Request):
                 codigo_asignado = datos_finales["codigo"]
                 
                 if text == "1":
-                    enviar_mensaje(chat_id, f"¡Muuucho éxito! Operación guardada en Sheets bajo el código **{codigo_asignado}**.\n📥 ¡Mándame otra fotito para seguir!")
+                    enviar_mensaje(chat_id, f"¡Muuucho éxito! Operación guardada en Sheets bajo el código {codigo_asignado}**.\n📥 ¡Mándame otra fotito para seguir!")
                 elif text == "2":
-                    enviar_mensaje(chat_id, f"¡Muuu! Operación **{codigo_asignado}** bien guardadita. Estoy armando tu PDF con mis cuernos...")
+                    enviar_mensaje(chat_id, f"¡Muuu! Operación <b>{codigo_asignado}</b> bien guardadita. Estoy armando tu PDF con mis cuernos...")
                     nombre_pdf = f"comprobante_{codigo_asignado}.pdf"
                     nombre_img_temporal = f"img_temp_{codigo_asignado}.jpg"
                     
