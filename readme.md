@@ -1,4 +1,4 @@
-# Toribio Bot
+# Chatbot de tesorería
 
 <p align="center">
   <img src="docs/toribio_telegram.png" width="250" alt="Imagen de perfil del chatbot de Telegram">
@@ -10,7 +10,7 @@
   <img src="https://img.shields.io/badge/Groq_AI-f55036?style=for-the-badge&logo=groq&logoColor=white" alt="Groq AI">
 </p>
 
-Toribio Bot es un chatbot de Telegram diseñado para la gestión y automatización del registro de gastos en tiempo real para proyectos y auditorías internas de grupos estudiantiles. 
+Este chatbot de tesorería de Telegram, bautizado en un inicio Toribio Bot, diseñado para la gestión y automatización del registro de gastos en tiempo real para proyectos y auditorías internas de grupos estudiantiles. 
 
 El bot recibe fotografías de recibos, boletas o facturas, utiliza un Modelo de Lenguaje Visual (VLM) para comprender e inyectar la información en una base de datos centralizada de Google Sheets, y ofrece la capacidad opcional de generar al instante un comprobante de validación en PDF procesado 100% de manera local.
 
